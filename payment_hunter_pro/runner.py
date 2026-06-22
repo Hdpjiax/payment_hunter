@@ -15,6 +15,7 @@ from .search_engines import DDGSEngine, BingEngine, SearchEngine
 
 from .detector import PaymentDetector
 from .models import SearchResult
+from .persistence import is_url_processed, mark_url_processed
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +100,28 @@ class SearchRunner:
                     engine: SearchEngine = BingEngine() if self.engine_name.lower() == "bing" else DDGSEngine()
                     urls = engine.search(dork, max_results=12)
 
-                    # Filtro estricto: solo sitios que parezcan de COMPRAS
-                    shop_keywords = ["shop", "store", "tienda", "ecommerce", "cart", "checkout", "comprar", "product", "tienda online"]
-                    shopping_urls = [u for u in urls if any(k in u.lower() for k in shop_keywords)]
-                    if shopping_urls:
-                        urls = shopping_urls  # priorizar tiendas reales
+                    # Filtrar para priorizar páginas de tiendas reales (no random ni motores de búsqueda)
+                    # Mantener si tiene palabra de tienda O de pago/checkout
+                    tienda_indicators = ["shop", "store", "tienda", "ecommerce", "catalogo", "productos", "categoria", "comprar", "tiendaonline"]
+                    pago_indicators = ["checkout", "payment", "cart", "pago", "factura", "order", "invoice", "receipt", "billing"]
+                    search_engines = ["google", "bing", "startpage", "duckduckgo", "yahoo", "baidu", "startpage.com"]
+                    filtered = []
+                    for u in urls:
+                        u_lower = u.lower()
+                        if any(se in u_lower for se in search_engines):
+                            continue
+                        if any(ind in u_lower for ind in tienda_indicators) or any(ind in u_lower for ind in pago_indicators):
+                            filtered.append(u)
+                    if filtered:
+                        urls = filtered
+                    else:
+                        urls = [u for u in urls if not any(se in u.lower() for se in search_engines)]
+
+                    # Filtrar URLs ya procesadas
+                    original = len(urls)
+                    urls = [u for u in urls if not is_url_processed(u)]
+                    if (skipped := original - len(urls)) > 0:
+                        self._send("log", f"⏭️ Saltadas {skipped} URLs ya analizadas en búsquedas anteriores.")
                 except Exception as exc:
                     logger.warning(f"Error en búsqueda {self.engine_name}: {exc}")
                     continue
@@ -174,12 +192,16 @@ class SearchRunner:
                         )
                         self._send("result", result)
                         self._send("log", f"✅ FORMULARIO DE PAGO REAL ENCONTRADO → {url} (score: {score})")
+                        mark_url_processed(url, had_payment=True, gateways=", ".join(detected), score=score, dork=dork, country=getattr(self, "_current_country", "Global"))
                         return 1, score
 
+                    # Marcar como procesado incluso si no tenía formulario (para no repetir en futuras búsquedas)
+                    mark_url_processed(url, had_payment=False, dork=dork, country=getattr(self, "_current_country", "Global"))
                     return 0, 0
                 except Exception as e:
                     logger.warning(f"Error en detección {url} (intento {attempt+1}): {e}")
                     if attempt == 1:
+                        mark_url_processed(url, had_payment=False, dork=dork, country=getattr(self, "_current_country", "Global"))
                         return 0, 0
                     await asyncio.sleep(1.0)  # backoff corto
 

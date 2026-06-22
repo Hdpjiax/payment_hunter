@@ -103,77 +103,74 @@ class PaymentDetector:
                 if name in self.active and any(re.search(p, html, re.I) for p in pats):
                     detected.append(GATEWAY_DISPLAY.get(name, name.upper()))
 
-            # === DETECCIÓN ESTRICTA: SOLO formularios de pago REALES con botón de pagar ===
+            # === DETECCIÓN AMPLIA: Cualquier formulario de pago o suscripción ===
+            # El objetivo es encontrar TODO lo que tenga un formulario de pago (incluyendo suscripciones, membresías, etc.)
             has_real_form = False
             score = 0
-            visible_pay = False
 
             string_matches = sum(1 for k in FORM_KEYWORDS if k in html)
-            score += min(string_matches * 8, 30)
+            score += min(string_matches * 10, 40)
 
             try:
-                # Campos de pago obligatorios (DOM estricto)
-                card_fields = await page.query_selector_all(
-                    'input[name*="card"], input[id*="card"], input[autocomplete*="cc-number"], '
-                    'input[data-braintree-name="number"], input[placeholder*="card" i]'
-                )
-                cvv_fields = await page.query_selector_all(
-                    'input[name*="cvv"], input[name*="cvc"], input[id*="cvv"], input[autocomplete*="cc-csc"]'
-                )
-                expiry_fields = await page.query_selector_all(
-                    'input[name*="exp"], input[id*="exp"], select[name*="exp"], input[autocomplete*="cc-exp"]'
+                # Buscar campos de pago (tarjeta, cvv, expiry, billing, etc.)
+                payment_inputs = await page.query_selector_all(
+                    'input[name*="card"], input[id*="card"], input[autocomplete*="cc-"], '
+                    'input[name*="cvv"], input[name*="cvc"], input[id*="cvv"], '
+                    'input[name*="exp"], input[id*="exp"], '
+                    'input[name*="billing"], input[id*="billing"], '
+                    'input[type="tel"], input[placeholder*="card" i], input[placeholder*="cvv" i]'
                 )
 
-                payment_fields_count = len(card_fields) + len(cvv_fields) + len(expiry_fields)
-                score += payment_fields_count * 12
+                # Buscar botones de acción de pago o suscripción
+                action_buttons = await page.query_selector_all(
+                    'button, input[type="submit"], a[role="button"]'
+                )
 
-                # Botón de PAGAR visible y con texto claro (lo más importante)
-                pay_button_selectors = [
-                    'button:has-text("pagar")', 'button:has-text("pay")', 'button:has-text("place order")',
-                    'button:has-text("comprar")', 'button:has-text("checkout")', 'button:has-text("finalizar")',
-                    'input[type="submit"][value*="pagar" i]', 'input[type="submit"][value*="pay" i]',
-                    '[data-testid*="pay"]', '[class*="pay-button"]'
+                pay_or_subscribe_words = [
+                    'pagar', 'pay', 'place order', 'comprar', 'checkout', 'finalizar', 
+                    'subscribe', 'suscribir', 'suscribirse', 'membership', 'plan', 
+                    'buy now', 'get started', 'join now', 'payment', 'billing'
                 ]
-                pay_buttons = []
-                for sel in pay_button_selectors:
-                    try:
-                        els = await page.query_selector_all(sel)
-                        pay_buttons.extend(els)
-                    except:
-                        pass
 
-                # Verificar si el botón es visible
-                for btn in pay_buttons:
+                has_pay_button = False
+                for btn in action_buttons:
                     try:
-                        is_visible = await btn.is_visible()
-                        if is_visible:
-                            visible_pay = True
+                        text = (await btn.inner_text() or '').lower()
+                        if any(word in text for word in pay_or_subscribe_words):
+                            has_pay_button = True
                             break
                     except:
                         pass
 
-                if visible_pay:
-                    score += 35
+                # Si hay inputs de pago O botón de pago/suscripción → es resultado
+                if len(payment_inputs) > 0 or has_pay_button:
                     has_real_form = True
+                    score += len(payment_inputs) * 15
+                    if has_pay_button:
+                        score += 40
 
-                # Regla estricta: solo verdadero si hay campos de pago Y botón pagar visible
-                if payment_fields_count >= 2 and visible_pay:
-                    has_real_form = True
-                    score += 20
-                elif payment_fields_count >= 1 and visible_pay:
-                    has_real_form = True
-                    score += 10
+                # También buscar formularios que parezcan de pago/suscripción
+                forms = await page.query_selector_all('form')
+                for form in forms:
+                    try:
+                        form_html = (await form.inner_html() or '').lower()
+                        if any(k in form_html for k in ['card', 'cvv', 'expiry', 'billing', 'payment', 'pagar', 'suscrib']):
+                            has_real_form = True
+                            score += 20
+                            break
+                    except:
+                        pass
 
             except Exception as e:
-                logger.debug(f"DOM check fallback: {e}")
-                # Fallback muy conservador
-                if any(k in html for k in ['card-number', 'cvv', 'pagar', 'place-order']):
+                logger.debug(f"DOM check error: {e}")
+                # Fallback muy amplio
+                if any(k in html for k in FORM_KEYWORDS) or any(w in html for w in ['pagar', 'pay', 'subscribe', 'suscrib']):
                     has_real_form = True
-                    score += 15
+                    score += 30
 
-            # Solo si tiene botón de pagar + campos, subimos el score alto
-            if has_real_form and visible_pay:
-                score = max(score, 70)
+            # Asegurar que si hay indicios claros, lo marquemos como resultado
+            if has_real_form:
+                score = max(score, 50)
 
             score = min(max(score, 0), 100)
 
