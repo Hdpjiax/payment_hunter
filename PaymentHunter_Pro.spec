@@ -1,7 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import customtkinter
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('C:\\Users\\Antonio Garcia\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\site-packages\\customtkinter', 'customtkinter')]
+# Colección portable (sin rutas absolutas de usuario)
+ctk_path = os.path.dirname(customtkinter.__file__)
+datas = [(ctk_path, 'customtkinter')]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('playwright')

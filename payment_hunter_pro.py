@@ -7,6 +7,8 @@ import random
 import pandas as pd
 import webbrowser
 from datetime import datetime
+from dataclasses import dataclass, asdict
+from queue import Queue, Empty
 from playwright.sync_api import sync_playwright
 from ddgs import DDGS
 
@@ -28,21 +30,207 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 ]
 
+# Constantes normalizadas (keys internas siempre minúsculas)
+GATEWAY_KEYS = ["adyen", "stripe", "paypal", "mercadopago", "openpay", "authorizenet"]
+GATEWAY_DISPLAY = {
+    "adyen": "Adyen",
+    "stripe": "Stripe",
+    "paypal": "PayPal",
+    "mercadopago": "Mercado Pago",
+    "openpay": "Openpay",
+    "authorizenet": "Authorize.net",
+}
+
+INDICATORS = {
+    'adyen': ['adyen.com', 'checkoutshopper', 'adyen-dropin'],
+    'stripe': ['stripe.com', 'js.stripe.com', 'stripe-elements', 'cardnumber'],
+    'paypal': ['paypal.com', 'paypalobjects', 'paypal-button'],
+    'mercadopago': ['mercadopago', 'mp.com'],
+    'openpay': ['openpay'],
+    'authorizenet': ['authorize.net'],
+}
+
+FORM_KEYWORDS = [
+    'card-number', 'cardnumber', 'cvv', 'expiry', 'expiration', 'billing',
+    'payment-form', 'pay-button', 'place-order', 'checkout-form'
+]
+
+
+@dataclass
+class SearchResult:
+    """Modelo real para un resultado de búsqueda. Hace el código más claro y testeable."""
+    url: str
+    gateways: str
+    real_form: str
+    timestamp: str
+
+
+class PaymentDetector:
+    """Responsable ÚNICO de visitar URLs y detectar formularios de pago reales.
+    Completamente aislado de la UI. Fácil de testear y reutilizar.
+    """
+    def __init__(self, proxies: list[str], use_stealth: bool, avoid_cloudflare: bool, active_gateways: list[str]):
+        self.proxies = [p for p in proxies if p] or []
+        self.proxy_index = 0
+        self.use_stealth = use_stealth
+        self.avoid_cloudflare = avoid_cloudflare
+        # Normalización defensiva
+        self.active = {g.lower().replace(" ", "") for g in active_gateways}
+
+    def _get_next_proxy(self):
+        if not self.proxies:
+            return None
+        proxy = self.proxies[self.proxy_index % len(self.proxies)]
+        self.proxy_index += 1
+        return proxy
+
+    def has_cloudflare(self, html: str) -> bool:
+        signals = ['cloudflare', 'cf-ray', 'cf-clearance', 'challenge']
+        return any(s in html.lower() for s in signals)
+
+    def detect_real_payment_form(self, url: str) -> tuple[list[str], bool]:
+        """Devuelve (gateways_detectados, tiene_formulario_real)."""
+        try:
+            proxy = self._get_next_proxy()
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    user_agent=random.choice(USER_AGENTS),
+                    proxy={"server": proxy} if proxy else None
+                )
+                page = context.new_page()
+                if self.use_stealth and STEALTH_AVAILABLE:
+                    stealth_sync(page)
+
+                page.goto(url, wait_until="networkidle", timeout=25000)
+                html = page.content().lower()
+
+                if self.avoid_cloudflare and self.has_cloudflare(html):
+                    browser.close()
+                    return [], False
+
+                detected = []
+                for name, pats in INDICATORS.items():
+                    if name in self.active and any(re.search(p, html, re.I) for p in pats):
+                        detected.append(GATEWAY_DISPLAY.get(name, name.upper()))
+
+                has_real_form = any(k in html for k in FORM_KEYWORDS)
+
+                browser.close()
+                return detected, has_real_form
+        except Exception:
+            # No tragamos silenciosamente en producción real, pero mantenemos compatibilidad
+            return [], False
+
+
+class SearchRunner:
+    """Orquesta la búsqueda completa (dorks + detección).
+    Maneja hilos, pausa y parada de forma limpia usando Events.
+    Comunica TODO vía queue (thread-safe).
+    """
+    def __init__(self, detector: PaymentDetector, max_sites: int, dorks: list[str], queue: Queue):
+        self.detector = detector
+        self.max_sites = max_sites
+        self.dorks = dorks
+        self.queue = queue
+        self._running = False
+        self._paused = False
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+
+    def start(self):
+        self._running = True
+        self._stop_event.clear()
+        self._pause_event.clear()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def toggle_pause(self):
+        self._paused = not self._paused
+        if self._paused:
+            self._pause_event.set()
+        else:
+            self._pause_event.clear()
+
+    def stop(self):
+        self._running = False
+        self._paused = False
+        self._stop_event.set()
+        self._pause_event.clear()
+
+    def is_running(self):
+        return self._running
+
+    def is_paused(self):
+        return self._paused
+
+    def _send(self, kind: str, payload=None):
+        self.queue.put((kind, payload))
+
+    def _run(self):
+        found = 0
+        self._send("log", "🔥 Iniciando búsqueda con proxies rotativos y dorks avanzados...")
+
+        for dork in self.dorks:
+            if not self._running or found >= self.max_sites:
+                break
+            self._send("log", f"Buscando dork: {dork[:100]}...")
+
+            try:
+                with DDGS() as ddgs:
+                    urls = [r['href'] for r in ddgs.text(dork, max_results=12) if r.get('href')]
+            except Exception:
+                continue
+
+            for url in urls:
+                if not self._running or found >= self.max_sites:
+                    break
+
+                # Pausa cooperativa
+                while self._paused and not self._stop_event.is_set():
+                    time.sleep(0.5)
+                if not self._running:
+                    break
+
+                self._send("log", f"Analizando formulario → {url}")
+                detected, has_real_form = self.detector.detect_real_payment_form(url)
+
+                if detected and has_real_form:
+                    result = SearchResult(
+                        url=url,
+                        gateways=", ".join(detected),
+                        real_form="Sí",
+                        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M")
+                    )
+                    self._send("result", result)
+                    self._send("log", f"✅ FORMULARIO DE PAGO REAL ENCONTRADO → {url}")
+                    found += 1
+
+                self._send("progress", min(found / self.max_sites, 1.0))
+                time.sleep(2.0)
+
+        self._send("log", f"🎉 Búsqueda finalizada. Total encontrados: {found}")
+        self._send("done", None)
+        self._running = False
+
+
 class PaymentHunter(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("🔥 PAYMENT HUNTER PRO v4.3 🔥")
         self.geometry("1550x1050")
         self.configure(fg_color="#0a0a0a")
-        
-        self.results = []
-        self.is_running = False
-        self.is_paused = False
-        self.proxies = []
-        self.current_proxy_index = 0
+
+        # Estado de resultados (usando modelo real)
+        self.results: list[SearchResult] = []
         self.result_widgets = []
-        
+
+        # Comunicación thread-safe
+        self.update_queue: Queue = Queue()
+        self.runner: SearchRunner | None = None
+
         self.create_ui()
+        # Iniciar el procesador de actualizaciones UI (seguro para hilos)
+        self.after(100, self._process_updates)
 
     def create_ui(self):
         ctk.CTkLabel(self, text="PAYMENT HUNTER PRO v4.3", 
@@ -155,7 +343,10 @@ class PaymentHunter(ctk.CTk):
         self.stealth_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(tab, text="🛡️ Modo Stealth Máximo", variable=self.stealth_var).pack(anchor="w", padx=30)
 
-    def log(self, msg):
+    # ============== MÉTODOS DE UI (se mantienen) ==============
+
+    def _do_log(self, msg: str):
+        """Actualización directa de log (solo llamar desde hilo principal)."""
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_text.insert("end", f"[{ts}] {msg}\n")
         self.log_text.see("end")
@@ -163,62 +354,6 @@ class PaymentHunter(ctk.CTk):
 
     def get_active_gateways(self):
         return [name for name, var in self.gateway_vars.items() if var.get()]
-
-    def get_next_proxy(self):
-        if not self.proxies:
-            return None
-        proxy = self.proxies[self.current_proxy_index % len(self.proxies)]
-        self.current_proxy_index += 1
-        return proxy
-
-    def get_random_user_agent(self):
-        return random.choice(USER_AGENTS)
-
-    def has_cloudflare(self, html):
-        signals = ['cloudflare', 'cf-ray', 'cf-clearance', 'challenge']
-        return any(s in html.lower() for s in signals)
-
-    def detect_real_payment_form(self, url):
-        indicators = {
-            'ADYEN': ['adyen.com', 'checkoutshopper', 'adyen-dropin'],
-            'STRIPE': ['stripe.com', 'js.stripe.com', 'stripe-elements', 'cardnumber'],
-            'PAYPAL': ['paypal.com', 'paypalobjects', 'paypal-button'],
-            'MERCADOPAGO': ['mercadopago', 'mp.com'],
-            'OPENPAY': ['openpay'],
-            'AUTHORIZENET': ['authorize.net']
-        }
-
-        try:
-            proxy = self.get_next_proxy()
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent=self.get_random_user_agent(),
-                    proxy={"server": proxy} if proxy else None
-                )
-                page = context.new_page()
-                if self.stealth_var.get() and STEALTH_AVAILABLE:
-                    stealth_sync(page)
-
-                page.goto(url, wait_until="networkidle", timeout=25000)
-                html = page.content().lower()
-
-                if self.chk_cloudflare.get() and self.has_cloudflare(html):
-                    browser.close()
-                    return [], False
-
-                detected = [name.upper() for name, pats in indicators.items() 
-                           if name in self.get_active_gateways() and any(re.search(p, html, re.I) for p in pats)]
-
-                # Detección fuerte de formulario de pago
-                form_keywords = ['card-number', 'cardnumber', 'cvv', 'expiry', 'expiration', 'billing', 
-                               'payment-form', 'pay-button', 'place-order', 'checkout-form']
-                has_real_form = any(k in html for k in form_keywords)
-
-                browser.close()
-                return detected, has_real_form
-        except:
-            return [], False
 
     def update_results_ui(self):
         for w in self.result_widgets:
@@ -228,104 +363,116 @@ class PaymentHunter(ctk.CTk):
         for row in self.results[-25:]:
             frame = ctk.CTkFrame(self.results_frame)
             frame.pack(fill="x", padx=10, pady=5)
-            
-            ctk.CTkLabel(frame, text=row['url'][:90] + "...", anchor="w").pack(side="left", fill="x", expand=True, padx=10)
-            ctk.CTkLabel(frame, text=row.get('gateways', ''), text_color="#00ff41").pack(side="left", padx=10)
-            
+
+            ctk.CTkLabel(frame, text=row.url[:90] + "...", anchor="w").pack(side="left", fill="x", expand=True, padx=10)
+            ctk.CTkLabel(frame, text=row.gateways, text_color="#00ff41").pack(side="left", padx=10)
+
             ctk.CTkButton(frame, text="🌐 Abrir", width=90, height=30,
-                         command=lambda u=row['url']: webbrowser.open(u)).pack(side="right", padx=8)
+                         command=lambda u=row.url: webbrowser.open(u)).pack(side="right", padx=8)
             self.result_widgets.append(frame)
 
-    def search_thread(self):
-        self.results.clear()
-        self.log("🔥 Iniciando búsqueda con proxies rotativos y dorks avanzados...")
+    # ============== CAMINO SEGURO DE ACTUALIZACIONES DESDE HILOS ==============
 
-        # Cargar proxies
-        self.proxies = [line.strip() for line in self.proxy_text.get("1.0", "end").splitlines() 
-                       if line.strip() and not line.startswith("#")]
-        self.current_proxy_index = 0
+    def _process_updates(self):
+        """Procesa la cola de mensajes desde el worker thread. Llamado periódicamente con after()."""
+        try:
+            while True:
+                kind, payload = self.update_queue.get_nowait()
 
-        max_sites = int(self.max_entry.get())
-        found = 0
-        active_gws = self.get_active_gateways()
-
-        # Dorks base + personalizados
-        base_dorks = [
-            f'{gw} ("checkout" OR "payment form" OR "proceed to payment" OR "finalizar compra") (shop OR store OR tienda OR cart) {self.country_menu.get()}'
-            for gw in active_gws
-        ]
-
-        custom = [d.strip() for d in self.custom_dorks.get("1.0", "end").splitlines() if d.strip() and not d.startswith("#")]
-        all_dorks = base_dorks + custom
-
-        for dork in all_dorks:
-            if not self.is_running or found >= max_sites:
-                break
-            self.log(f"Buscando dork: {dork[:100]}...")
-            try:
-                with DDGS() as ddgs:
-                    urls = [r['href'] for r in ddgs.text(dork, max_results=12) if r.get('href')]
-            except:
-                continue
-
-            for url in urls:
-                if not self.is_running or found >= max_sites:
-                    break
-                while self.is_paused and self.is_running:
-                    time.sleep(0.5)
-
-                self.log(f"Analizando formulario → {url}")
-                detected, has_real_form = self.detect_real_payment_form(url)
-
-                if detected and has_real_form:
-                    row = {
-                        "url": url,
-                        "gateways": ", ".join(detected),
-                        "real_form": "Sí",
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
-                    }
-                    self.results.append(row)
-                    self.log(f"✅ FORMULARIO DE PAGO REAL ENCONTRADO → {url}")
-                    found += 1
+                if kind == "log":
+                    self._do_log(payload)
+                elif kind == "result":
+                    self.results.append(payload)
                     self.update_results_ui()
+                elif kind == "progress":
+                    self.progress.set(payload)
+                elif kind == "done":
+                    self.stop_search()
+        except Empty:
+            pass
 
-                self.progress.set(min(found / max_sites, 1.0))
-                time.sleep(2.0)
+        # Reprogramar
+        if self.winfo_exists():
+            self.after(100, self._process_updates)
 
-        self.log(f"🎉 Búsqueda finalizada. Total encontrados: {len(self.results)}")
-        self.stop_search()
+    # ============== CONTROL DE BÚSQUEDA (ahora delega en runner) ==============
 
     def toggle_search(self):
-        if not self.is_running:
-            self.is_running = True
+        if not self.runner or not self.runner.is_running():
+            # Preparar configuración
+            proxies = [
+                line.strip() for line in self.proxy_text.get("1.0", "end").splitlines()
+                if line.strip() and not line.startswith("#")
+            ]
+            max_sites = int(self.max_entry.get() or "50")
+            active_gws = self.get_active_gateways()
+
+            base_dorks = [
+                f'{gw} ("checkout" OR "payment form" OR "proceed to payment" OR "finalizar compra") (shop OR store OR tienda OR cart) {self.country_menu.get()}'
+                for gw in active_gws
+            ]
+            custom = [
+                d.strip() for d in self.custom_dorks.get("1.0", "end").splitlines()
+                if d.strip() and not d.startswith("#")
+            ]
+            all_dorks = base_dorks + custom
+
+            # Crear detector y runner (lógica separada)
+            use_stealth = self.stealth_var.get() and STEALTH_AVAILABLE
+            avoid_cf = bool(self.chk_cloudflare.get())
+
+            detector = PaymentDetector(
+                proxies=proxies,
+                use_stealth=use_stealth,
+                avoid_cloudflare=avoid_cf,
+                active_gateways=active_gws
+            )
+
+            self.results.clear()
+            self.update_results_ui()
+
+            self.runner = SearchRunner(
+                detector=detector,
+                max_sites=max_sites,
+                dorks=all_dorks,
+                queue=self.update_queue
+            )
+
             self.start_btn.configure(state="disabled", text="⏹️ CORRIENDO...")
-            self.pause_btn.configure(state="normal")
-            threading.Thread(target=self.search_thread, daemon=True).start()
+            self.pause_btn.configure(state="normal", text="⏸️ PAUSAR")
+            self.runner.start()
         else:
             self.stop_search()
 
     def toggle_pause(self):
-        self.is_paused = not self.is_paused
-        self.pause_btn.configure(text="▶️ REANUDAR" if self.is_paused else "⏸️ PAUSAR")
+        if self.runner:
+            self.runner.toggle_pause()
+            paused = self.runner.is_paused()
+            self.pause_btn.configure(text="▶️ REANUDAR" if paused else "⏸️ PAUSAR")
 
     def stop_search(self):
-        self.is_running = False
-        self.is_paused = False
+        if self.runner:
+            self.runner.stop()
+        self.runner = None
         self.start_btn.configure(state="normal", text="🚀 INICIAR BÚSQUEDA")
-        self.pause_btn.configure(state="disabled")
+        self.pause_btn.configure(state="disabled", text="⏸️ PAUSAR")
 
     def export(self):
         if not self.results:
             messagebox.showwarning("Sin datos", "No hay resultados para exportar")
             return
-        df = pd.DataFrame(self.results)
-        file = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv"), ("Excel", "*.xlsx")])
+        # Usar modelo real → DataFrame
+        df = pd.DataFrame([asdict(r) for r in self.results])
+        file = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("Excel", "*.xlsx")]
+        )
         if file:
             if file.endswith('.xlsx'):
                 df.to_excel(file, index=False)
             else:
                 df.to_csv(file, index=False, encoding='utf-8')
-            self.log(f"💾 Exportado correctamente: {file}")
+            self._do_log(f"💾 Exportado correctamente: {file}")
 
 if __name__ == "__main__":
     app = PaymentHunter()
