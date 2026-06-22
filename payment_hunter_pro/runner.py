@@ -11,7 +11,7 @@ from typing import Optional
 
 from datetime import datetime
 
-from .search_engines import DDGSEngine, BingEngine, SearchEngine
+from .search_engines import GoogleEngine, DDGSEngine, SearchEngine
 
 from .detector import PaymentDetector
 from .models import SearchResult
@@ -94,28 +94,21 @@ class SearchRunner:
                 if not self._running or found >= self.max_sites:
                     break
 
-                self._send("log", f"Buscando dork: {dork[:100]}...")
+                self._send("log", f"🔍 Buscando dork: {dork[:80]}...")
 
                 try:
-                    engine: SearchEngine = BingEngine() if self.engine_name.lower() == "bing" else DDGSEngine()
+                    engine: SearchEngine = DDGSEngine() if "duckduckgo" in self.engine_name.lower() else GoogleEngine()
                     urls = engine.search(dork, max_results=12)
 
-                    # Filtrar para priorizar páginas de tiendas reales (no random ni motores de búsqueda)
-                    # Mantener si tiene palabra de tienda O de pago/checkout
-                    tienda_indicators = ["shop", "store", "tienda", "ecommerce", "catalogo", "productos", "categoria", "comprar", "tiendaonline"]
-                    pago_indicators = ["checkout", "payment", "cart", "pago", "factura", "order", "invoice", "receipt", "billing"]
-                    search_engines = ["google", "bing", "startpage", "duckduckgo", "yahoo", "baidu", "startpage.com"]
-                    filtered = []
-                    for u in urls:
-                        u_lower = u.lower()
-                        if any(se in u_lower for se in search_engines):
-                            continue
-                        if any(ind in u_lower for ind in tienda_indicators) or any(ind in u_lower for ind in pago_indicators):
-                            filtered.append(u)
-                    if filtered:
-                        urls = filtered
-                    else:
-                        urls = [u for u in urls if not any(se in u.lower() for se in search_engines)]
+                    # Filtrar URLs basura (motores de búsqueda, redes sociales, etc.)
+                    # Google ya devuelve resultados relevantes cuando los dorks son buenos
+                    junk_domains = [
+                        "google.com", "bing.com", "startpage.com", "duckduckgo.com",
+                        "yahoo.com", "baidu.com", "mojeek.com", "wikipedia.org",
+                        "youtube.com", "facebook.com", "twitter.com", "instagram.com",
+                        "reddit.com", "pinterest.com", "tiktok.com", "linkedin.com",
+                    ]
+                    urls = [u for u in urls if not any(junk in u.lower() for junk in junk_domains)]
 
                     # Filtrar URLs ya procesadas
                     original = len(urls)

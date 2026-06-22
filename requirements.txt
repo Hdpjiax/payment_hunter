@@ -3,6 +3,8 @@ pandas
 playwright
 playwright-stealth
 duckduckgo-search
+openpyxl
+googlesearch-python
 
 # Desarrollo y tests
 pytest>=8.0

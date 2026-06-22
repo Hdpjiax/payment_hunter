@@ -43,7 +43,7 @@ class TestSearchRunnerStates(unittest.TestCase):
 
 class TestSearchRunnerQueueMessages(unittest.TestCase):
     def test_sends_log_and_result_messages(self):
-        mock_detector = MagicMock(spec=PaymentDetector)
+        mock_detector = MagicMock()
         mock_detector.detect_real_payment_form.return_value = (["Stripe"], True, 75)
 
         q = Queue()

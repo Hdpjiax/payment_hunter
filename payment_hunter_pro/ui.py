@@ -192,7 +192,7 @@ class PaymentHunter(ctk.CTk):
         row3 = ctk.CTkFrame(filters_card, fg_color="transparent")
         row3.pack(fill="x", padx=12, pady=(2,6))
         ctk.CTkLabel(row3, text="Search Engine", font=ctk.CTkFont(size=11), text_color="#aaa").pack(side="left")
-        self.engine_menu = ctk.CTkOptionMenu(row3, values=["DuckDuckGo", "Bing"], width=120, height=26)
+        self.engine_menu = ctk.CTkOptionMenu(row3, values=["Google (Recomendado)", "DuckDuckGo"], width=190, height=26)
         self.engine_menu.pack(side="right")
 
         self.chk_cloudflare = ctk.CTkCheckBox(filters_card, text="Avoid Cloudflare", onvalue=1, offvalue=0)
@@ -219,11 +219,13 @@ class PaymentHunter(ctk.CTk):
         self.results_tree = None
         self.results_tree_data = {}
         self.dorks_generated = []
-        self.proxies_data = []  # list of dicts {'raw': str, 'type': str, 'status': str, 'time_ms': int or None}
+        from .persistence import load_all_proxies
+        self.proxies_data = load_all_proxies()
 
         self.build_results_view(self.results_frame)
         self.build_dorks_view(self.dorks_frame)
         self.build_proxies_view(self.proxies_frame)
+        self.update_proxies_tree()
 
         self.switch_main_view("results")
 
@@ -301,51 +303,122 @@ class PaymentHunter(ctk.CTk):
         self.log_text.pack(fill="both", expand=True, padx=10, pady=(2,6))
 
     def build_dorks_view(self, parent):
-        # Two columns: Generator controls | Generated Dorks
-        parent.grid_columnconfigure(0, weight=1)
-        parent.grid_columnconfigure(1, weight=1)
+        """Vista del generador de dorks con categorías y previsualización."""
+        parent.grid_columnconfigure(0, weight=2)
+        parent.grid_columnconfigure(1, weight=3)
         parent.grid_rowconfigure(0, weight=1)
 
-        # Left column: Controls to generate specific inurl dorks
-        left = ctk.CTkFrame(parent, fg_color="#1f1f1f", corner_radius=8)
-        left.grid(row=0, column=0, sticky="nsew", padx=(10,5), pady=10)
+        # === LEFT: Generator Controls ===
+        left = ctk.CTkScrollableFrame(parent, fg_color="#1a1a1a", corner_radius=10)
+        left.grid(row=0, column=0, sticky="nsew", padx=(12, 6), pady=10)
 
-        ctk.CTkLabel(left, text="GENERADOR DE DORKS ESPECÍFICOS", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00c853").pack(anchor="w", padx=10, pady=8)
+        ctk.CTkLabel(left, text="🎯 GENERADOR DE DORKS",
+                     font=ctk.CTkFont(size=20, weight="bold"),
+                     text_color="#00c853").pack(anchor="w", padx=15, pady=(15, 4))
+        ctk.CTkLabel(left, text="Selecciona categorías para generar dorks\nefectivos para Google",
+                     font=ctk.CTkFont(size=13), text_color="#999").pack(anchor="w", padx=15, pady=(0, 15))
 
-        ctk.CTkLabel(left, text="Estilo: inurl:orderstatus=, inurl:payment=, shop/orders?, etc.", font=ctk.CTkFont(size=10), text_color="#888").pack(anchor="w", padx=10)
+        # Category: E-commerce Platforms
+        self.cat_platforms = ctk.BooleanVar(value=True)
+        cat1 = ctk.CTkFrame(left, fg_color="#222", corner_radius=8)
+        cat1.pack(fill="x", padx=12, pady=5)
+        ctk.CTkCheckBox(cat1, text="🛒 Plataformas E-commerce",
+                        variable=self.cat_platforms,
+                        font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=12, pady=(10, 2))
+        ctk.CTkLabel(cat1, text="Shopify, WooCommerce, PrestaShop, Magento, OpenCart",
+                     font=ctk.CTkFont(size=11), text_color="#777").pack(anchor="w", padx=35, pady=(0, 10))
 
-        self.dgen_categories = ctk.CTkTextbox(left, height=8, font=ctk.CTkFont(size=10))
-        self.dgen_categories.pack(fill="x", padx=10, pady=4)
-        self.dgen_categories.insert("1.0", "# Categorías (una por línea)\norderstatus\norderhistory\ninvoice\nbill\npayment\nreceipt\ncheckoutid\ntransactionid\npaymethod\nconfirmorder\ncancelorder\nrefund\npaymentstatus\norderconfirmation\npaymentdetails\npaymentgateway\nshippingstatus\npaymentamount\nordertracking\npaymentreceipt\nordercancelled\nshop/products\nshop/orders\nshop/checkout\nshop/cart\nshop/payment\nshop/invoice")
+        # Category: Checkout/Payment Pages
+        self.cat_checkout = ctk.BooleanVar(value=True)
+        cat2 = ctk.CTkFrame(left, fg_color="#222", corner_radius=8)
+        cat2.pack(fill="x", padx=12, pady=5)
+        ctk.CTkCheckBox(cat2, text="💳 Páginas de Checkout / Pago",
+                        variable=self.cat_checkout,
+                        font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=12, pady=(10, 2))
+        ctk.CTkLabel(cat2, text="inurl:checkout, inurl:payment, inurl:pago, inurl:cart",
+                     font=ctk.CTkFont(size=11), text_color="#777").pack(anchor="w", padx=35, pady=(0, 10))
 
-        ctk.CTkLabel(left, text="Dominios / TLD (ej: site:.com site:.co)", font=ctk.CTkFont(size=10)).pack(anchor="w", padx=10)
-        self.dgen_tld = ctk.CTkEntry(left)
-        self.dgen_tld.pack(fill="x", padx=10, pady=2)
-        self.dgen_tld.insert(0, "site:.com site:.co site:.mx site:.es site:.ar site:.cl")
+        # Category: Store URLs
+        self.cat_stores = ctk.BooleanVar(value=True)
+        cat3 = ctk.CTkFrame(left, fg_color="#222", corner_radius=8)
+        cat3.pack(fill="x", padx=12, pady=5)
+        ctk.CTkCheckBox(cat3, text="🛍️ Tiendas por URL",
+                        variable=self.cat_stores,
+                        font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=12, pady=(10, 2))
+        ctk.CTkLabel(cat3, text='inurl:shop, inurl:store, inurl:tienda, "add to cart"',
+                     font=ctk.CTkFont(size=11), text_color="#777").pack(anchor="w", padx=35, pady=(0, 10))
 
-        ctk.CTkLabel(left, text="Cantidad por categoría", font=ctk.CTkFont(size=10)).pack(anchor="w", padx=10)
-        self.dgen_count = ctk.CTkEntry(left, width=80)
-        self.dgen_count.pack(anchor="w", padx=10, pady=2)
-        self.dgen_count.insert(0, "3")
+        # Category: Subscriptions/Memberships
+        self.cat_subscriptions = ctk.BooleanVar(value=False)
+        cat4 = ctk.CTkFrame(left, fg_color="#222", corner_radius=8)
+        cat4.pack(fill="x", padx=12, pady=5)
+        ctk.CTkCheckBox(cat4, text="🔄 Suscripciones / Membresías",
+                        variable=self.cat_subscriptions,
+                        font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=12, pady=(10, 2))
+        ctk.CTkLabel(cat4, text='"subscribe" "membership" "plan" "pricing"',
+                     font=ctk.CTkFont(size=11), text_color="#777").pack(anchor="w", padx=35, pady=(0, 10))
 
-        ctk.CTkButton(left, text="GENERAR DORKS (estilo que pegaste)", fg_color="#00c853", text_color="#111", height=36,
-                      command=self.generate_specific_dorks).pack(fill="x", padx=10, pady=10)
+        # TLD / Country
+        tld_frame = ctk.CTkFrame(left, fg_color="#222", corner_radius=8)
+        tld_frame.pack(fill="x", padx=12, pady=(15, 5))
+        ctk.CTkLabel(tld_frame, text="🌎 País / TLD",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=12, pady=(10, 4))
+        ctk.CTkLabel(tld_frame, text="Separa con espacios. Deja vacío para buscar sin filtro de país.",
+                     font=ctk.CTkFont(size=10), text_color="#666").pack(anchor="w", padx=12, pady=(0, 2))
+        self.dork_tld_entry = ctk.CTkEntry(tld_frame,
+                                           placeholder_text=".mx .co .es .com .ar .cl",
+                                           font=ctk.CTkFont(size=13), height=36)
+        self.dork_tld_entry.pack(fill="x", padx=12, pady=(0, 10))
+        self.dork_tld_entry.insert(0, ".mx .co .com")
 
-        ctk.CTkButton(left, text="Limpiar duplicados", fg_color="#555", command=self.clean_dups_dorks).pack(fill="x", padx=10, pady=4)
+        # Custom dorks
+        custom_frame = ctk.CTkFrame(left, fg_color="#222", corner_radius=8)
+        custom_frame.pack(fill="x", padx=12, pady=5)
+        ctk.CTkLabel(custom_frame, text="🔧 Dorks Personalizados (uno por línea)",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=12, pady=(10, 4))
+        self.custom_dorks_text = ctk.CTkTextbox(custom_frame, height=80,
+                                                font=ctk.CTkFont(family="Consolas", size=12))
+        self.custom_dorks_text.pack(fill="x", padx=12, pady=(0, 10))
+        self.custom_dorks_text.insert("1.0", '# Un dork por línea\ninurl:"shop centri"\n"powered by shopify" site:.mx')
 
-        # Right column: Generated list
-        right = ctk.CTkFrame(parent, fg_color="#1f1f1f", corner_radius=8)
-        right.grid(row=0, column=1, sticky="nsew", padx=(5,10), pady=10)
+        # Buttons
+        btn_frame = ctk.CTkFrame(left, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=12, pady=(15, 10))
+        ctk.CTkButton(btn_frame, text="⚡ GENERAR DORKS",
+                      fg_color="#00c853", text_color="#111",
+                      height=44, font=ctk.CTkFont(size=15, weight="bold"),
+                      command=self.generate_dorks).pack(fill="x", pady=3)
+        ctk.CTkButton(btn_frame, text="🚀 GENERAR Y BUSCAR",
+                      fg_color="#2196f3", text_color="#fff",
+                      height=44, font=ctk.CTkFont(size=15, weight="bold"),
+                      command=self.generate_and_search).pack(fill="x", pady=3)
 
-        ctk.CTkLabel(right, text="DORKS GENERADOS", font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=10, pady=8)
+        # === RIGHT: Generated Dorks Preview ===
+        right = ctk.CTkFrame(parent, fg_color="#1a1a1a", corner_radius=10)
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 12), pady=10)
 
-        self.dorks_listbox = ctk.CTkTextbox(right, height=22, font=ctk.CTkFont(family="Consolas", size=10))
-        self.dorks_listbox.pack(fill="both", expand=True, padx=10, pady=4)
+        header = ctk.CTkFrame(right, fg_color="transparent")
+        header.pack(fill="x", padx=15, pady=(12, 0))
+        ctk.CTkLabel(header, text="📋 DORKS GENERADOS",
+                     font=ctk.CTkFont(size=18, weight="bold"),
+                     text_color="#e0e0e0").pack(side="left")
+        self.dorks_count_label = ctk.CTkLabel(header, text="0 dorks",
+                                              font=ctk.CTkFont(size=13), text_color="#777")
+        self.dorks_count_label.pack(side="right")
+
+        self.dorks_listbox = ctk.CTkTextbox(right,
+                                            font=ctk.CTkFont(family="Consolas", size=13))
+        self.dorks_listbox.pack(fill="both", expand=True, padx=12, pady=8)
 
         btns = ctk.CTkFrame(right, fg_color="transparent")
-        btns.pack(fill="x", padx=10, pady=4)
-        ctk.CTkButton(btns, text="Copiar a Dorks Activos", command=self.copy_dorks_to_search).pack(side="left", padx=4)
-        ctk.CTkButton(btns, text="Limpiar lista", fg_color="#aa3333", command=lambda: self.dorks_listbox.delete("1.0", "end")).pack(side="left", padx=4)
+        btns.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkButton(btns, text="Copiar a búsqueda activa", width=180,
+                      command=self.copy_dorks_to_search).pack(side="left", padx=4)
+        ctk.CTkButton(btns, text="Limpiar duplicados", width=140,
+                      fg_color="#555", command=self.clean_dups_dorks).pack(side="left", padx=4)
+        ctk.CTkButton(btns, text="Limpiar todo", width=100,
+                      fg_color="#aa3333",
+                      command=lambda: (self.dorks_generated.clear(), self.update_dorks_list())).pack(side="left", padx=4)
 
     def build_proxies_view(self, parent):
         ctk.CTkLabel(parent, text="PROXIES - Gestión Avanzada (test real con timing)", font=ctk.CTkFont(size=14, weight="bold"), text_color="#00c853").pack(anchor="w", padx=10, pady=8)
@@ -386,68 +459,96 @@ class PaymentHunter(ctk.CTk):
         # Double click to delete individual
         self.proxies_tree.bind("<Double-1>", self._on_proxy_double_click_delete)
 
-    def generate_specific_dorks(self):
-        """Genera dorks en el estilo EXACTO que pegaste (inurl:orderstatus=, inurl:payment=, shop/orders?, etc).
-        Sin pasarelas (se detectan después).
-        Usa las categorías del campo (prellenado).
-        Cada clic añade más nuevos.
-        """
-        categories_raw = self.dgen_categories.get("1.0", "end").strip()
-        tld_raw = self.dgen_tld.get().strip()
-        try:
-            count = int(self.dgen_count.get() or "4")
-        except:
-            count = 4
+    def generate_dorks(self):
+        """Genera dorks efectivos basados en las categorías seleccionadas y TLDs."""
+        tld_raw = self.dork_tld_entry.get().strip()
 
-        categories = [c.strip() for c in categories_raw.splitlines() if c.strip() and not c.startswith("#")]
-        if not categories:
-            categories = [
-                "orderstatus", "orderhistory", "invoice", "bill", "payment", "receipt",
-                "checkoutid", "transactionid", "paymethod", "confirmorder", "cancelorder",
-                "refund", "refundstatus", "paymentstatus", "orderconfirmation", "ordercomplete",
-                "orderedit", "paymentdetails", "paymentgateway", "shippingstatus", "shippingdetails",
-                "shippingmethod", "paymentamount", "invoiceid", "transactionstatus", "ordertracking",
-                "paymentreceipt", "paymentinvoice", "ordercancelled", "orderrefund", "orderupdate",
-                "orderreview", "ordereditform", "paymentform", "ordertrackingid", "deliverystatus",
-                "deliverydetails", "shiptracking", "shippingform", "orderid", "orderupdateform",
-                "transactstatus", "paymentauth",
-                "shop/products", "shop/categories", "shop/orders", "shop/customers", "shop/invoice",
-                "shop/payment", "shop/trackorder", "shop/viewcart", "shop/wishlist", "shop/checkout",
-                "shop/promotions", "shop/discounts", "shop/coupons", "shop/deals", "shop/bestsellers",
-                "shop/newarrivals", "shop/trending", "shop/sale", "shop/featured", "shop/productdetails",
-                "shop/reviews", "shop/rating", "shop/compare", "shop/refund", "shop/returnpolicy",
-                "shop/shippinginfo", "shop/deliveryoptions", "shop/orderhistory", "shop/orderstatus",
-                "shop/paymentoptions", "shop/addressbook", "shop/personalization", "shop/giftcards",
-                "shop/storelocator", "shop/subscriptions", "shop/loyaltypoints", "shop/saveditems",
-                "shop/relatedproducts"
-            ]
+        # Parse TLDs
+        tlds = []
+        for t in tld_raw.split():
+            t = t.strip()
+            if not t:
+                continue
+            if not t.startswith("site:"):
+                if t.startswith("."):
+                    t = f"site:{t}"
+                else:
+                    t = f"site:.{t}"
+            tlds.append(t)
 
-        tlds = [t.strip() for t in tld_raw.split() if t.strip()] or ["site:.com", "site:.co", "site:.mx", "site:.es"]
+        base_patterns = []
 
-        new_dorks = []
-        for cat in categories:
-            for _ in range(count):
+        if self.cat_platforms.get():
+            base_patterns.extend([
+                '"powered by shopify"',
+                '"woocommerce" shop',
+                '"prestashop"',
+                '"magento" store',
+                '"opencart"'
+            ])
+
+        if self.cat_checkout.get():
+            base_patterns.extend([
+                'inurl:checkout "credit card"',
+                'inurl:payment "card number"',
+                'inurl:pago "tarjeta"',
+                'inurl:checkout "stripe"'
+            ])
+
+        if self.cat_stores.get():
+            base_patterns.extend([
+                'inurl:shop "add to cart"',
+                'inurl:store "buy now"',
+                'inurl:tienda "comprar"'
+            ])
+
+        if self.cat_subscriptions.get():
+            base_patterns.extend([
+                'inurl:subscribe "membership"',
+                'inurl:subscribe "plan"',
+                'inurl:subscribe "pricing"'
+            ])
+
+        # Combinar base_patterns con TLDs
+        generated = []
+        if tlds:
+            for pat in base_patterns:
                 for tld in tlds:
-                    new_dorks.append(f"{tld} inurl:{cat}=")
-                    new_dorks.append(f"{tld} inurl:{cat}?")
-                    if "/" in cat or cat.startswith("shop"):
-                        new_dorks.append(f"{tld} inurl:{cat}")
+                    generated.append(f"{pat} {tld}")
+        else:
+            generated = base_patterns[:]
 
-        # Quitar duplicados de esta tanda
+        # Dorks personalizados
+        custom_raw = self.custom_dorks_text.get("1.0", "end").strip()
+        custom_lines = []
+        for line in custom_raw.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                custom_lines.append(line)
+
+        # Combinar y quitar duplicados
+        all_dorks = generated + custom_lines
+        unique = []
         seen = set()
-        unique = [d for d in new_dorks if not (d in seen or seen.add(d))]
+        for d in all_dorks:
+            if d not in seen:
+                seen.add(d)
+                unique.append(d)
 
-        # Añadir solo los que no estaban antes
-        current = set(self.dorks_generated)
-        added = 0
-        for d in unique:
-            if d not in current:
-                self.dorks_generated.append(d)
-                current.add(d)
-                added += 1
-
+        self.dorks_generated = unique
         self.update_dorks_list()
-        self._do_log(f"Generados {added} nuevos dorks estilo inurl (exacto al que pegaste). Total: {len(self.dorks_generated)}")
+        self._do_log(f"Generados {len(self.dorks_generated)} dorks efectivos para Google.")
+
+    def generate_and_search(self):
+        """Genera los dorks, los copia para la búsqueda y arranca el escaneo."""
+        self.generate_dorks()
+        if not self.dorks_generated:
+            self._do_log("⚠️ No se generaron dorks. Selecciona alguna categoría o añade dorks personalizados.")
+            return
+        self.copy_dorks_to_search()
+        self.switch_main_view("results")
+        if not self.runner or not self.runner.is_running():
+            self.toggle_search()
 
     def update_dorks_list(self):
         self.dorks_listbox.delete("1.0", "end")
@@ -471,7 +572,6 @@ class PaymentHunter(ctk.CTk):
         self._do_log("Dorks copiados para la búsqueda.")
 
     def import_proxies_file(self, ftype):
-        from tkinter import filedialog
         import json, csv
         path = filedialog.askopenfilename(filetypes=[(f"{ftype.upper()} files", f"*.{ftype}")])
         if not path:
@@ -501,16 +601,11 @@ class PaymentHunter(ctk.CTk):
                                 self.proxies_data.append({"raw": p, "type": "unknown", "status": "not tested", "time_ms": None})
                                 added += 1
             self.update_proxies_tree()
+            self.save_all_proxies_to_db()
             self._do_log(f"Importados {added} proxies desde {path}")
         except Exception as e:
             self._do_log(f"Error importando: {e}")
 
-    def update_proxies_tree(self):
-        for item in self.proxies_tree.get_children():
-            self.proxies_tree.delete(item)
-        for i, p in enumerate(self.proxies_data):
-            item = self.proxies_tree.insert("", "end", values=(p['raw'], p.get('type','?'), p.get('status','?'), p.get('time_ms') or '-'))
-            self.proxies_tree_data[item] = i
 
     def test_all_proxies(self):
         import time
@@ -521,70 +616,160 @@ class PaymentHunter(ctk.CTk):
             return
 
         self.testing_active = True
-        test_btn = None  # we'll find or use a ref, for now use log
 
         def test_thread():
             self.after(0, lambda: self.test_btn.configure(text="Testing... (use Pause)"))
             self.after(0, lambda: self.pause_test_btn.configure(text="Pause", fg_color="#ff9800"))
-            self._do_log("🔄 Starting proxy test (real connection, auto scheme detect)...")
-            for idx, p in enumerate(self.proxies_data):
-                if not getattr(self, 'testing_active', True):
-                    self._do_log("⏹️ Proxy test paused/stopped.")
-                    break
+            self._do_log("🔄 Starting proxy test (real connection, reusing browser)...")
 
-                raw = p['raw'].strip()
-                if not raw:
-                    continue
+            pw = None
+            browser = None
+            try:
+                pw = sync_playwright().start()
+                browser = pw.chromium.launch(headless=True, timeout=15000)
 
-                # Auto add scheme if missing
-                if '://' not in raw:
-                    candidates = [f"http://{raw}", f"https://{raw}", f"socks5://{raw}", f"socks4://{raw}"]
-                else:
-                    candidates = [raw]
+                # Obtener timeout configurable del usuario
+                try:
+                    timeout_sec = int(self.page_timeout_entry.get() or 45)
+                except Exception:
+                    timeout_sec = 45
+                timeout_ms = timeout_sec * 1000
 
-                best_time = None
-                best_type = "unknown"
-                status = "dead"
-
-                for cand in candidates:
-                    try:
-                        start = time.time()
-                        with sync_playwright() as pl:
-                            b = pl.chromium.launch(headless=True, timeout=10000)
-                            ctx = b.new_context(
-                                proxy={"server": cand},
-                                ignore_https_errors=True,
-                                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                            )
-                            pg = ctx.new_page()
-                            # Use fast reliable target
-                            pg.goto("https://1.1.1.1", timeout=15000, wait_until="domcontentloaded")
-                            b.close()
-                        elapsed = int((time.time() - start) * 1000)
-                        if best_time is None or elapsed < best_time:
-                            best_time = elapsed
-                            best_type = cand.split("://")[0]
-                        status = "alive"
+                for idx, p in enumerate(self.proxies_data):
+                    if not getattr(self, 'testing_active', True):
+                        self._do_log("⏹️ Proxy test paused/stopped.")
                         break
-                    except Exception as e:
-                        err_str = str(e)
-                        if "ERR_PROXY_CONNECTION_FAILED" in err_str or "net::ERR" in err_str or "Connection refused" in err_str:
-                            status = "dead"
-                        else:
-                            status = "timeout"
+
+                    raw = p['raw'].strip()
+                    if not raw:
                         continue
 
-                p['type'] = best_type
-                p['status'] = status
-                p['time_ms'] = best_time if best_time else None
+                    # Auto add scheme if missing
+                    if '://' not in raw:
+                        candidates = [f"http://{raw}", f"https://{raw}", f"socks5://{raw}", f"socks4://{raw}"]
+                    else:
+                        candidates = [raw]
 
-                # Thread-safe update
-                self.after(0, lambda p=p: self._update_single_proxy_in_tree(p))
+                    best_time = None
+                    best_type = "unknown"
+                    status = "dead"
 
-                msg = f"Test {raw} : {status}"
-                if best_time:
-                    msg += f" ({best_time}ms)"
-                self.after(0, lambda m=msg: self._do_log(m))
+                    for cand in candidates:
+                        # Si es http o https, usar urllib (muy rápido)
+                        if cand.startswith("http://") or cand.startswith("https://"):
+                            import urllib.request
+                            import urllib.error
+
+                            proxy_handler = urllib.request.ProxyHandler({
+                                'http': cand,
+                                'https': cand
+                            })
+                            opener = urllib.request.build_opener(proxy_handler)
+
+                            # Intentar con HTTP y HTTPS generate_204
+                            for test_url in ["http://google.com/generate_204", "https://google.com/generate_204"]:
+                                try:
+                                    start = time.time()
+                                    req = urllib.request.Request(test_url, headers={'User-Agent': 'Mozilla/5.0'})
+                                    with opener.open(req, timeout=timeout_sec) as resp:
+                                        resp.read()
+                                    elapsed = int((time.time() - start) * 1000)
+                                    if best_time is None or elapsed < best_time:
+                                        best_time = elapsed
+                                        best_type = cand.split("://")[0]
+                                    status = "alive"
+                                    break
+                                except urllib.error.HTTPError as he:
+                                    elapsed = int((time.time() - start) * 1000)
+                                    # 407, 403, 502, etc. de un proxy indica que está activo
+                                    if he.code in (407, 403, 502, 503, 504, 204):
+                                        if best_time is None or elapsed < best_time:
+                                            best_time = elapsed
+                                            best_type = cand.split("://")[0]
+                                        status = "alive"
+                                        break
+                                except Exception as e:
+                                    elapsed = int((time.time() - start) * 1000)
+                                    err_str = str(e).lower()
+                                    if "connection refused" in err_str or "connection failed" in err_str:
+                                        if status != "alive" and status != "timeout":
+                                            status = "dead"
+                                    else:
+                                        if status != "alive":
+                                            status = "timeout"
+                                        if best_time is None or elapsed < best_time:
+                                            best_time = elapsed
+                                            best_type = cand.split("://")[0]
+
+                            if status == "alive":
+                                break
+                        else:
+                            # SOCKS u otro tipo de proxy -> Usar Playwright
+                            ctx = None
+                            try:
+                                start = time.time()
+                                ctx = browser.new_context(
+                                    proxy={"server": cand},
+                                    ignore_https_errors=True,
+                                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                                )
+                                pg = ctx.new_page()
+                                pg.goto("https://google.com/generate_204", timeout=timeout_ms, wait_until="domcontentloaded")
+                                elapsed = int((time.time() - start) * 1000)
+                                if best_time is None or elapsed < best_time:
+                                    best_time = elapsed
+                                    best_type = cand.split("://")[0]
+                                status = "alive"
+                                break
+                            except Exception as e:
+                                elapsed = int((time.time() - start) * 1000)
+                                err_str = str(e)
+                                if "ERR_PROXY_CONNECTION_FAILED" in err_str or "net::ERR" in err_str or "Connection refused" in err_str:
+                                    if status != "alive" and status != "timeout":
+                                        status = "dead"
+                                else:
+                                    if status != "alive":
+                                        status = "timeout"
+                                    if best_time is None or elapsed < best_time:
+                                        best_time = elapsed
+                                        best_type = cand.split("://")[0]
+                                continue
+                            finally:
+                                if ctx:
+                                    try:
+                                        ctx.close()
+                                    except Exception:
+                                        pass
+
+                    p['type'] = best_type
+                    p['status'] = status
+                    p['time_ms'] = best_time if best_time else None
+
+                    # Persist single proxy test result
+                    from .persistence import save_single_proxy
+                    save_single_proxy(p)
+
+                    # Thread-safe update
+                    self.after(0, lambda p=p: self._update_single_proxy_in_tree(p))
+
+                    msg = f"Test {raw} : {status}"
+                    if best_time:
+                        msg += f" ({best_time}ms)"
+                    self.after(0, lambda m=msg: self._do_log(m))
+
+            except Exception as e:
+                self.after(0, lambda e=e: self._do_log(f"❌ Error launching browser: {e}"))
+            finally:
+                if browser:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+                if pw:
+                    try:
+                        pw.stop()
+                    except Exception:
+                        pass
 
             self.testing_active = False
             self.after(0, lambda: self.test_btn.configure(text="Test All (Real)"))
@@ -605,12 +790,9 @@ class PaymentHunter(ctk.CTk):
         before = len(self.proxies_data)
         self.proxies_data = [p for p in self.proxies_data if p.get('status') != 'dead']
         self.update_proxies_tree()
+        self.save_all_proxies_to_db()
         self._do_log(f"Borrados {before - len(self.proxies_data)} proxies caídos.")
 
-    def _on_tree_double_click(self, event):
-        item = self.results_tree.identify_row(event.y)
-        if item and item in self.results_tree_data:
-            webbrowser.open(self.results_tree_data[item])
 
     def add_manual_proxy(self):
         text = self.manual_proxy_entry.get().strip()
@@ -624,6 +806,7 @@ class PaymentHunter(ctk.CTk):
                 added += 1
         self.manual_proxy_entry.delete(0, "end")
         self.update_proxies_tree()
+        self.save_all_proxies_to_db()
         self._do_log(f"Added {added} manual proxy(es).")
 
     def delete_selected_proxy(self):
@@ -635,6 +818,7 @@ class PaymentHunter(ctk.CTk):
             if 0 <= idx < len(self.proxies_data):
                 del self.proxies_data[idx]
         self.update_proxies_tree()
+        self.save_all_proxies_to_db()
         self._do_log("Deleted selected proxy(ies).")
 
     def _on_proxy_double_click_delete(self, event):
@@ -644,6 +828,7 @@ class PaymentHunter(ctk.CTk):
             if 0 <= idx < len(self.proxies_data):
                 del self.proxies_data[idx]
             self.update_proxies_tree()
+            self.save_all_proxies_to_db()
             self._do_log("Deleted proxy.")
 
     def update_proxies_tree(self):
@@ -654,6 +839,10 @@ class PaymentHunter(ctk.CTk):
             vals = (p.get('raw', ''), p.get('type', '?'), p.get('status', 'not tested'), str(p.get('time_ms')) if p.get('time_ms') is not None else '-')
             item_id = self.proxies_tree.insert("", "end", values=vals)
             self.proxies_tree_data[item_id] = i
+
+    def save_all_proxies_to_db(self):
+        from .persistence import save_proxies
+        save_proxies(self.proxies_data)
 
     # ============== MÉTODOS DE UTILIDAD ==============
 
@@ -667,66 +856,6 @@ class PaymentHunter(ctk.CTk):
         # Always detect all gateways (no selection needed - we identify after visiting)
         return ["adyen", "stripe", "paypal", "mercadopago", "openpay", "authorizenet"]
 
-    def test_proxies(self):
-        """Testea los proxies de forma robusta. Soporta proxies lentos."""
-        raw_proxies = [
-            line.strip() for line in self.proxy_text.get("1.0", "end").splitlines()
-            if line.strip() and not line.startswith("#")
-        ]
-        if not raw_proxies:
-            messagebox.showinfo("Proxies", "No hay proxies para probar.")
-            return
-
-        # Usar el timeout configurado por el usuario (más alto para proxies lentos)
-        timeout_sec = int(self.page_timeout_entry.get() or 45)
-        timeout_ms = timeout_sec * 1000
-
-        self._do_log(f"🔍 Iniciando test de proxies (timeout: {timeout_sec}s)...")
-
-        def _test():
-            from playwright.sync_api import sync_playwright
-            for proxy in raw_proxies:
-                # Mostrar versión segura del proxy
-                safe_proxy = proxy
-                if "@" in proxy:
-                    parts = proxy.split("@")
-                    safe_proxy = parts[0].split(":")[0] + ":****@" + parts[1] if ":" in parts[0] else proxy
-
-                try:
-                    with sync_playwright() as p:
-                        browser = p.chromium.launch(
-                            headless=True,
-                            args=["--disable-blink-features=AutomationControlled"]
-                        )
-                        context = browser.new_context(
-                            proxy={"server": proxy},
-                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-                            ignore_https_errors=True,
-                        )
-                        page = context.new_page()
-
-                        response = page.goto(
-                            "https://httpbin.org/ip",
-                            timeout=timeout_ms,
-                            wait_until="domcontentloaded"
-                        )
-                        browser.close()
-
-                        if response and response.ok:
-                            self.update_queue.put(("log", f"✅ Proxy OK: {safe_proxy}"))
-                        else:
-                            self.update_queue.put(("log", f"⚠️ Proxy respondió pero status raro: {safe_proxy}"))
-                except Exception as e:
-                    err = str(e)
-                    if "ERR_PROXY_CONNECTION_FAILED" in err or "net::ERR" in err:
-                        msg = "ERR_PROXY_CONNECTION_FAILED (no se pudo conectar al proxy)"
-                    elif "Timeout" in err or "timeout" in err:
-                        msg = f"Timeout ({timeout_sec}s) - proxy lento. Se usará en la búsqueda principal."
-                    else:
-                        msg = err[:150]
-                    self.update_queue.put(("log", f"⚠️ Proxy LENTO/INCIERTO: {safe_proxy} → {msg}"))
-
-        threading.Thread(target=_test, daemon=True).start()
 
     def update_results_ui(self):
         # Clear tree
@@ -773,44 +902,7 @@ class PaymentHunter(ctk.CTk):
         if hasattr(self, "start_btn"):
             self._animate_button(self.start_btn, "#ff4444", 120)
 
-    def _generate_dorks_in_results(self):
-        """Genera muchos dorks desde el panel principal de resultados y los añade."""
-        payment = [t.strip() for t in self.main_payment_terms.get().split(",") if t.strip()]
-        shop = [t.strip() for t in self.main_shop_terms.get().split(",") if t.strip()]
-        active = self.get_active_gateways()
-        country = self.country_menu.get() if hasattr(self, 'country_menu') else "Global"
 
-        if not active:
-            messagebox.showwarning("Dorks", "Selecciona pasarelas primero.")
-            return
-
-        generated = []
-        for gw in active:
-            for p in payment[:5]:
-                for s in shop[:5]:
-                    generated.append(f'{gw} "{p}" {s} {country}')
-            generated.append(f'{gw} (inurl:checkout OR inurl:payment OR inurl:subscribe) (pagar OR pay OR suscrib) {country}')
-
-        seen = set()
-        unique = []
-        for d in generated:
-            if d not in seen:
-                seen.add(d)
-                unique.append(d)
-
-        current = self.custom_dorks.get("1.0", "end").strip()
-        new_text = "\n".join(unique[:35])
-
-        if current and not current.startswith("#"):
-            self.custom_dorks.delete("1.0", "end")
-            self.custom_dorks.insert("1.0", current + "\n" + new_text)
-        else:
-            self.custom_dorks.delete("1.0", "end")
-            self.custom_dorks.insert("1.0", new_text)
-
-        self._do_log(f"Generados {len(unique[:35])} dorks desde el panel de resultados.")
-
-    # generate_advanced_dorks removido del sidebar (queda la versión integrada en resultados)
 
     def load_history(self):
         if not hasattr(self, 'history_tree'):
@@ -897,51 +989,43 @@ class PaymentHunter(ctk.CTk):
         if not self.runner or not self.runner.is_running():
             if hasattr(self, 'proxies_data') and self.proxies_data:
                 # Auto use only live proxies if tested
-                live_proxies = [p['raw'] for p in self.proxies_data if p.get('status') == 'alive']
+                live_proxies = [p['raw'] for p in self.proxies_data if p.get('status') in ('alive', 'timeout')]
                 if live_proxies:
                     proxies = live_proxies
-                    self._do_log(f"Using {len(live_proxies)} live proxies automatically.")
+                    self._do_log(f"Using {len(live_proxies)} live/timeout proxies automatically.")
                 else:
                     proxies = [p['raw'] for p in self.proxies_data]
                     self._do_log("No live proxies marked, using all.")
             else:
-                proxies = [
-                    line.strip() for line in (self.proxy_text.get("1.0", "end") if hasattr(self, 'proxy_text') else '').splitlines()
-                    if line.strip() and not line.startswith("#")
-                ]
+                proxies = []
             max_sites = int(self.max_entry.get() or "50")
             max_concurrent = int(getattr(self, 'concurrent_entry', None).get() if hasattr(self, 'concurrent_entry') else 4) or 4
+            country = self.country_menu.get() if hasattr(self, 'country_menu') else "Global"
 
-            # Dorks generales (sin nombres de pasarela).
-            # La pasarela se detecta al visitar la página.
-            base_dorks = []
-            country = self.country_menu.get()
-
-            shop_context = '(shop OR store OR tienda OR ecommerce OR "tienda online" OR cart OR checkout OR "comprar")'
-
-            base_dorks.extend([
-                f'("checkout" OR "payment form" OR "proceed to checkout" OR "place order" OR "finalizar compra") '
-                f'("form" OR "card" OR "cvv" OR "billing" OR "pagar" OR "pay") '
-                f'{shop_context} {country}',
-
-                f'inurl:(checkout OR payment OR cart OR billing) '
-                f'("form" OR "card" OR "pagar") '
-                f'{shop_context} {country}',
-
-                f'("add to cart" OR "buy now" OR "suscribirse") '
-                f'("payment" OR "checkout" OR "pagar") '
-                f'{shop_context} {country}',
-            ])
-
-            # Para que coincida con tu estilo, si usas dorks del generador (inurl:orderstatus= etc), se priorizarán
-            # las que también tengan palabras de tienda.
+            # Dorks: usar los generados, o crear dorks básicos de fallback
             if hasattr(self, 'dorks_generated') and self.dorks_generated:
                 custom = self.dorks_generated[:]
+            elif hasattr(self, 'search_dorks') and self.search_dorks:
+                custom = self.search_dorks[:]
             else:
-                custom = [
-                    d.strip() for d in (self.custom_dorks.get("1.0", "end") if hasattr(self, 'custom_dorks') else "").splitlines()
-                    if d.strip() and not d.startswith("#")
+                custom = []
+
+            # Si no hay dorks, generar unos básicos efectivos
+            if not custom:
+                tld = country if country != "Global" else "site:.com"
+                base_dorks = [
+                    f'"powered by shopify" {tld}',
+                    f'inurl:checkout "payment" {tld}',
+                    f'inurl:shop "add to cart" {tld}',
+                    f'inurl:store "buy now" {tld}',
+                    f'"woocommerce" "add to cart" {tld}',
+                    f'inurl:tienda "comprar" {tld}',
+                    f'inurl:checkout "credit card" {tld}',
+                    f'"prestashop" tienda {tld}',
                 ]
+            else:
+                base_dorks = []
+
             all_dorks = base_dorks + custom
 
             use_stealth = self.stealth_var.get() and STEALTH_AVAILABLE

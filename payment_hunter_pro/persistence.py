@@ -22,8 +22,64 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS proxies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            raw TEXT UNIQUE,
+            type TEXT,
+            status TEXT,
+            time_ms INTEGER,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
+
+def save_proxies(proxies: List[dict]):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('DELETE FROM proxies')
+        for p in proxies:
+            c.execute('''
+                INSERT OR REPLACE INTO proxies (raw, type, status, time_ms)
+                VALUES (?, ?, ?, ?)
+            ''', (p['raw'], p['type'], p['status'], p['time_ms']))
+        conn.commit()
+    except Exception as e:
+        print(f"DB save_proxies error: {e}")
+    finally:
+        conn.close()
+
+def save_single_proxy(p: dict):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute('''
+            INSERT OR REPLACE INTO proxies (raw, type, status, time_ms)
+            VALUES (?, ?, ?, ?)
+        ''', (p['raw'], p['type'], p['status'], p['time_ms']))
+        conn.commit()
+    except Exception as e:
+        print(f"DB save_single_proxy error: {e}")
+    finally:
+        conn.close()
+
+def load_all_proxies() -> List[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT raw, type, status, time_ms FROM proxies ORDER BY id ASC")
+        rows = c.fetchall()
+        return [
+            {"raw": r[0], "type": r[1], "status": r[2], "time_ms": r[3]}
+            for r in rows
+        ]
+    except Exception as e:
+        print(f"DB load_all_proxies error: {e}")
+        return []
+    finally:
+        conn.close()
 
 def save_result(result: SearchResult):
     conn = sqlite3.connect(DB_PATH)

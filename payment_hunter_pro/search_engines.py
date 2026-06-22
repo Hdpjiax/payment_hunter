@@ -1,42 +1,70 @@
-"""Abstracción simple de motores de búsqueda.
-Mantener ligero (sin deps extras pesadas).
+"""Motores de búsqueda para Google Dorking.
+
+GoogleEngine (default): Usa googlesearch-python — soporta TODOS los operadores
+de Google (inurl:, site:, intitle:, filetype:, "exact match", etc.)
+
+DDGSEngine (fallback): DuckDuckGo Search.
 """
-import urllib.parse
-import urllib.request
-import re
+import logging
 from typing import List
 
+logger = logging.getLogger(__name__)
+
+
 class SearchEngine:
-    def search(self, dork: str, max_results: int = 12) -> List[str]:
+    """Interfaz base para motores de búsqueda."""
+    def search(self, dork: str, max_results: int = 10) -> List[str]:
         raise NotImplementedError
 
-class DDGSEngine(SearchEngine):
-    def search(self, dork: str, max_results: int = 12) -> List[str]:
-        from ddgs import DDGS
-        try:
-            with DDGS() as ddgs:
-                return [r['href'] for r in ddgs.text(dork, max_results=max_results) if r.get('href')]
-        except Exception:
-            return []
 
-class BingEngine(SearchEngine):
-    """Bing básico usando urllib (sin API key). Crudo pero funcional."""
-    def search(self, dork: str, max_results: int = 12) -> List[str]:
+class GoogleEngine(SearchEngine):
+    """Google Search via googlesearch-python.
+
+    Soporta todos los operadores de Google Dorks:
+    - inurl: / intext: / intitle: / filetype:
+    - site:.mx / site:.com
+    - "exact match"
+    - OR / AND / -exclude
+
+    Incluye delay entre queries para evitar bloqueos.
+    """
+
+    def __init__(self, sleep_interval: float = 3.0):
+        self.sleep_interval = sleep_interval
+
+    def search(self, dork: str, max_results: int = 10) -> List[str]:
         try:
-            query = urllib.parse.quote(dork)
-            url = f"https://www.bing.com/search?q={query}&count={max_results}"
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=12) as response:
-                html = response.read().decode('utf-8', errors='ignore')
-            # Extraer links de resultados (regex simple)
-            links = re.findall(r'<a href="(https?://[^"]+)"[^>]*>.*?</a>', html)
-            clean = []
-            for l in links:
-                if 'bing.com' not in l and 'microsoft.com' not in l and l not in clean:
-                    clean.append(l)
-                if len(clean) >= max_results:
-                    break
-            return clean
-        except Exception:
+            from googlesearch import search
+            results = list(search(
+                dork,
+                num_results=max_results,
+                sleep_interval=self.sleep_interval,
+            ))
+            logger.info(f"Google: {len(results)} resultados para '{dork[:80]}'")
+            return results
+        except Exception as e:
+            logger.warning(f"Google error ({type(e).__name__}): {e}")
+            logger.info("Intentando fallback a DuckDuckGo...")
+            try:
+                return DDGSEngine().search(dork, max_results)
+            except Exception:
+                return []
+
+
+class DDGSEngine(SearchEngine):
+    """DuckDuckGo Search (fallback).
+
+    NOTA: No soporta operadores avanzados como inurl: o site:.
+    Útil como fallback cuando Google bloquea.
+    """
+
+    def search(self, dork: str, max_results: int = 10) -> List[str]:
+        try:
+            from ddgs import DDGS
+            with DDGS() as ddgs:
+                results = [r['href'] for r in ddgs.text(dork, max_results=max_results) if r.get('href')]
+                logger.info(f"DuckDuckGo: {len(results)} resultados")
+                return results
+        except Exception as e:
+            logger.warning(f"DuckDuckGo error: {e}")
             return []
