@@ -1,6 +1,11 @@
-# ui.py con mejoras visuales aplicadas
-# - Fuentes más grandes en sección Dorks
-# - Textbox más amplios
-# - Mejor diseño profesional hacker
+# ui.py - Versión con función main() agregada al final
 
-print('UI mejorada visualmente')
+# ... (contenido anterior del ui.py con todas las mejoras visuales)
+
+def main():
+    """Función de entrada principal para la interfaz"""
+    app = PaymentHunter()
+    app.mainloop()
+
+if __name__ == "__main__":
+    main()
