@@ -27,3 +27,26 @@ python payment_hunter_pro.py
 ## Nota
 
 El archivo .spec está incluido para generar ejecutables con PyInstaller.
+
+## Tests
+
+Se agregaron pruebas unitarias para las partes aisladas y testeables (`PaymentDetector`, `SearchRunner`, `SearchResult`).
+
+### Instalar dependencias de desarrollo
+
+```bash
+pip install -r requirements.txt
+# (incluye pytest)
+```
+
+### Ejecutar los tests
+
+```bash
+# Con pytest (recomendado)
+pytest
+
+# O con unittest (sin dependencias extra)
+python -m unittest discover -s tests
+```
+
+Los tests usan mocks pesados de playwright y ddgs para no requerir navegador ni conexión a internet durante la ejecución.

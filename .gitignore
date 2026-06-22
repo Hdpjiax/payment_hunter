@@ -12,6 +12,12 @@ __pycache__/
 *.egg-info/
 *.egg
 
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.*
+
 # Virtual environments
 venv/
 env/

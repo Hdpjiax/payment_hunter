@@ -74,8 +74,8 @@ class PaymentDetector:
         self.proxy_index = 0
         self.use_stealth = use_stealth
         self.avoid_cloudflare = avoid_cloudflare
-        # Normalización defensiva
-        self.active = {g.lower().replace(" ", "") for g in active_gateways}
+        # Normalización defensiva (quita espacios y puntos para que coincida con UI + "Authorize.net")
+        self.active = {g.lower().replace(" ", "").replace(".", "") for g in active_gateways}
 
     def _get_next_proxy(self):
         if not self.proxies:
