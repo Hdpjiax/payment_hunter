@@ -6,13 +6,8 @@ import re
 import unittest
 from unittest.mock import MagicMock, patch
 
-from payment_hunter_pro import (
-    PaymentDetector,
-    INDICATORS,
-    FORM_KEYWORDS,
-    GATEWAY_DISPLAY,
-    STEALTH_AVAILABLE,
-)
+from payment_hunter_pro.detector import PaymentDetector, STEALTH_AVAILABLE
+from payment_hunter_pro.models import INDICATORS, FORM_KEYWORDS, GATEWAY_DISPLAY
 
 
 class TestPaymentDetectorNormalization(unittest.TestCase):
@@ -72,29 +67,25 @@ class TestProxyRotation(unittest.TestCase):
 class TestDetectRealPaymentForm(unittest.TestCase):
     """Mocks para simular playwright sin lanzar nada real."""
 
-    def _make_successful_mock_context(self, html_content: str):
-        """Construye mocks completos de la jerarquía playwright."""
+    def _make_successful_mock_browser(self, html_content: str):
+        """Construye mocks para el nuevo modelo de reutilización de navegador."""
         mock_page = MagicMock()
         mock_page.content.return_value = html_content
         mock_page.goto.return_value = None
 
         mock_context = MagicMock()
         mock_context.new_page.return_value = mock_page
+        # context.close() se llama dentro de detect
 
         mock_browser = MagicMock()
         mock_browser.new_context.return_value = mock_context
-        mock_browser.close.return_value = None
 
         mock_p = MagicMock()
         mock_p.chromium.launch.return_value = mock_browser
 
-        mock_playwright_cm = MagicMock()
-        mock_playwright_cm.__enter__.return_value = mock_p
-        mock_playwright_cm.__exit__.return_value = False
+        return mock_p, mock_browser, mock_context
 
-        return mock_playwright_cm, mock_browser
-
-    @patch("payment_hunter_pro.sync_playwright")
+    @patch("payment_hunter_pro.detector.sync_playwright")
     def test_detects_stripe_and_has_form(self, mock_sync):
         html = """
         <html>
@@ -104,8 +95,8 @@ class TestDetectRealPaymentForm(unittest.TestCase):
           <button>Place Order</button>
         </html>
         """
-        mock_playwright, mock_browser = self._make_successful_mock_context(html)
-        mock_sync.return_value = mock_playwright
+        mock_p, mock_browser, mock_context = self._make_successful_mock_browser(html)
+        mock_sync.return_value.start.return_value = mock_p
 
         detector = PaymentDetector(
             proxies=["http://proxy1"],
@@ -113,17 +104,19 @@ class TestDetectRealPaymentForm(unittest.TestCase):
             avoid_cloudflare=True,
             active_gateways=["stripe", "adyen"],
         )
-        detected, has_form = detector.detect_real_payment_form("https://example-shop.com/checkout")
+        detected, has_form, score = detector.detect_real_payment_form("https://example-shop.com/checkout")
 
         self.assertIn("Stripe", detected)
         self.assertTrue(has_form)
-        mock_browser.close.assert_called_once()
+        self.assertGreaterEqual(score, 0)
+        # Ahora se cierra el context por url, no el browser
+        mock_context.close.assert_called_once()
 
-    @patch("payment_hunter_pro.sync_playwright")
+    @patch("payment_hunter_pro.detector.sync_playwright")
     def test_skips_when_cloudflare_detected_and_avoid_enabled(self, mock_sync):
         html = "cf-ray: abc123 <html>stripe elements</html>"
-        mock_playwright, mock_browser = self._make_successful_mock_context(html)
-        mock_sync.return_value = mock_playwright
+        mock_p, mock_browser, mock_context = self._make_successful_mock_browser(html)
+        mock_sync.return_value.start.return_value = mock_p
 
         detector = PaymentDetector(
             proxies=[],
@@ -131,45 +124,45 @@ class TestDetectRealPaymentForm(unittest.TestCase):
             avoid_cloudflare=True,
             active_gateways=["stripe"],
         )
-        detected, has_form = detector.detect_real_payment_form("https://cloudflare-protected.com")
+        detected, has_form, score = detector.detect_real_payment_form("https://cloudflare-protected.com")
 
         self.assertEqual(detected, [])
         self.assertFalse(has_form)
-        mock_browser.close.assert_called_once()
+        mock_context.close.assert_called_once()
 
-    @patch("payment_hunter_pro.sync_playwright")
+    @patch("payment_hunter_pro.detector.sync_playwright")
     def test_detects_multiple_gateways(self, mock_sync):
         html = "paypal.com mercadopago checkout-form card-number"
-        mock_playwright, _ = self._make_successful_mock_context(html)
-        mock_sync.return_value = mock_playwright
+        mock_p, _, _ = self._make_successful_mock_browser(html)
+        mock_sync.return_value.start.return_value = mock_p
 
         detector = PaymentDetector([], False, False, ["paypal", "mercadopago", "stripe"])
-        detected, has_form = detector.detect_real_payment_form("https://test.com")
+        detected, has_form, score = detector.detect_real_payment_form("https://test.com")
 
         self.assertIn("PayPal", detected)
         self.assertIn("Mercado Pago", detected)
         self.assertTrue(has_form)
 
-    @patch("payment_hunter_pro.sync_playwright")
+    @patch("payment_hunter_pro.detector.sync_playwright")
     def test_returns_empty_on_exception(self, mock_sync):
         mock_sync.side_effect = Exception("Playwright crashed")
         detector = PaymentDetector([], False, False, ["adyen"])
-        detected, has_form = detector.detect_real_payment_form("https://bad.com")
+        detected, has_form, score = detector.detect_real_payment_form("https://bad.com")
         self.assertEqual(detected, [])
         self.assertFalse(has_form)
 
-    @patch("payment_hunter_pro.sync_playwright")
-    @patch("payment_hunter_pro.random.choice")
+    @patch("payment_hunter_pro.detector.sync_playwright")
+    @patch("payment_hunter_pro.models.random.choice")
     def test_uses_random_user_agent(self, mock_random, mock_sync):
         mock_random.return_value = "test-ua/1.0"
         html = "<html>adyen</html>"
-        mock_playwright, _ = self._make_successful_mock_context(html)
-        mock_sync.return_value = mock_playwright
+        mock_p, mock_browser, _ = self._make_successful_mock_browser(html)
+        mock_sync.return_value.start.return_value = mock_p
 
         detector = PaymentDetector([], False, False, ["adyen"])
-        detector.detect_real_payment_form("https://x.com")
+        detected, has_form, score = detector.detect_real_payment_form("https://x.com")
 
-        call_kwargs = mock_sync.return_value.__enter__.return_value.chromium.launch.return_value.new_context.call_args[1]
+        call_kwargs = mock_browser.new_context.call_args[1]
         self.assertIn("user_agent", call_kwargs)
         self.assertEqual(call_kwargs["user_agent"], "test-ua/1.0")
 
@@ -183,17 +176,17 @@ class TestDetectRealPaymentForm(unittest.TestCase):
                 detected.append(GATEWAY_DISPLAY.get(name, name.upper()))
         self.assertEqual(detected, [])
 
-    @patch("payment_hunter_pro.sync_playwright")
+    @patch("payment_hunter_pro.detector.sync_playwright")
     def test_stealth_applied_when_available_and_enabled(self, mock_sync):
         if not STEALTH_AVAILABLE:
             self.skipTest("playwright-stealth no está disponible")
 
         html = "<html>openpay</html>"
-        mock_playwright, _ = self._make_successful_mock_context(html)
-        mock_sync.return_value = mock_playwright
+        mock_p, _, _ = self._make_successful_mock_browser(html)
+        mock_sync.return_value.start.return_value = mock_p
 
         detector = PaymentDetector([], True, False, ["openpay"])
-        with patch("payment_hunter_pro.stealth_sync") as mock_stealth:
+        with patch("payment_hunter_pro.detector.stealth_sync") as mock_stealth:
             detector.detect_real_payment_form("https://test.com")
             mock_stealth.assert_called_once()
 

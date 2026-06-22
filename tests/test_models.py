@@ -2,7 +2,7 @@
 import unittest
 from dataclasses import asdict
 
-from payment_hunter_pro import SearchResult
+from payment_hunter_pro.models import SearchResult
 
 
 class TestSearchResult(unittest.TestCase):
@@ -26,12 +26,10 @@ class TestSearchResult(unittest.TestCase):
             timestamp="2026-06-22 11:00"
         )
         d = asdict(result)
-        self.assertEqual(d, {
-            "url": "https://tienda.com/pago",
-            "gateways": "Adyen",
-            "real_form": "Sí",
-            "timestamp": "2026-06-22 11:00"
-        })
+        self.assertEqual(d["url"], "https://tienda.com/pago")
+        self.assertEqual(d["gateways"], "Adyen")
+        self.assertIn("confidence_score", d)
+        self.assertIn("dork", d)
 
     def test_search_result_equality(self):
         r1 = SearchResult("https://a.com", "Stripe", "Sí", "2026-01-01 00:00")

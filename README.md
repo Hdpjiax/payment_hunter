@@ -50,3 +50,16 @@ python -m unittest discover -s tests
 ```
 
 Los tests usan mocks pesados de playwright y ddgs para no requerir navegador ni conexión a internet durante la ejecución.
+
+## Mejoras recientes implementadas
+
+- Estructura modular limpia (models / detector / runner / ui)
+- Reutilización del navegador (gran mejora de velocidad)
+- UI de resultados con **ttk.Treeview** (mucho mejor que frames dinámicos)
+- **Detección más inteligente** usando `page.query_selector` + score de confianza (0-100)
+- Export más rico (incluye country, confidence_score, dork)
+- Botón "Test Proxies"
+- Selector de motor de búsqueda (preparado para expansión)
+- Logging real + eliminación de código muerto
+
+**Nota sobre asíncrono**: El soporte completo con Playwright Async + paralelismo está preparado para implementación futura (requiere reescritura del runner con asyncio).

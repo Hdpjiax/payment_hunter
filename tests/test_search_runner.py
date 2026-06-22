@@ -6,7 +6,9 @@ import unittest
 from queue import Queue
 from unittest.mock import MagicMock
 
-from payment_hunter_pro import SearchRunner, SearchResult, PaymentDetector
+from payment_hunter_pro.runner import SearchRunner
+from payment_hunter_pro.models import SearchResult
+from payment_hunter_pro.detector import PaymentDetector
 
 
 class TestSearchRunnerStates(unittest.TestCase):
@@ -20,7 +22,7 @@ class TestSearchRunnerStates(unittest.TestCase):
     def test_toggle_pause_and_is_paused(self):
         detector = MagicMock()
         q = Queue()
-        runner = SearchRunner(detector, 10, [], q)
+        runner = SearchRunner(detector, 10, [], q, max_concurrent=3)
 
         self.assertFalse(runner.is_paused())
         runner.toggle_pause()
@@ -31,7 +33,7 @@ class TestSearchRunnerStates(unittest.TestCase):
     def test_stop_resets_flags(self):
         detector = MagicMock()
         q = Queue()
-        runner = SearchRunner(detector, 10, [], q)
+        runner = SearchRunner(detector, 10, [], q, max_concurrent=3)
         runner._running = True
         runner._paused = True
         runner.stop()
@@ -42,11 +44,11 @@ class TestSearchRunnerStates(unittest.TestCase):
 class TestSearchRunnerQueueMessages(unittest.TestCase):
     def test_sends_log_and_result_messages(self):
         mock_detector = MagicMock(spec=PaymentDetector)
-        mock_detector.detect_real_payment_form.return_value = (["Stripe"], True)
+        mock_detector.detect_real_payment_form.return_value = (["Stripe"], True, 75)
 
         q = Queue()
         dorks = ["stripe checkout site:.com"]
-        runner = SearchRunner(mock_detector, max_sites=3, dorks=dorks, queue=q)
+        runner = SearchRunner(mock_detector, max_sites=3, dorks=dorks, queue=q, max_concurrent=3)
 
         # Ejecutamos versión controlada del loop (sin thread ni DDGS real)
         runner._running = True
@@ -54,7 +56,7 @@ class TestSearchRunnerQueueMessages(unittest.TestCase):
 
         def fake_run():
             runner._send("log", "Iniciando búsqueda fake...")
-            detected, has_form = runner.detector.detect_real_payment_form("https://fake.com")
+            detected, has_form, score = runner.detector.detect_real_payment_form("https://fake.com")
             if detected and has_form:
                 res = SearchResult(
                     url="https://fake.com",
@@ -89,7 +91,7 @@ class TestSearchRunnerQueueMessages(unittest.TestCase):
     def test_pause_does_not_block_stop(self):
         detector = MagicMock()
         q = Queue()
-        runner = SearchRunner(detector, 10, [], q)
+        runner = SearchRunner(detector, 10, [], q, max_concurrent=3)
         runner.toggle_pause()
         self.assertTrue(runner.is_paused())
         runner.stop()
