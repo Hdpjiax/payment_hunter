@@ -97,7 +97,7 @@ class SearchRunner:
                 self._send("log", f"🔍 Buscando dork: {dork[:80]}...")
 
                 try:
-                    engine: SearchEngine = DDGSEngine() if "duckduckgo" in self.engine_name.lower() else GoogleEngine()
+                    engine: SearchEngine = DDGSEngine(proxies=self.detector.proxies) if "duckduckgo" in self.engine_name.lower() else GoogleEngine(proxies=self.detector.proxies)
                     urls = engine.search(dork, max_results=12)
 
                     # Filtrar URLs basura (motores de búsqueda, redes sociales, etc.)
@@ -146,6 +146,12 @@ class SearchRunner:
 
                 # Actualizar progreso después del batch
                 self._send("progress", min(found / self.max_sites, 1.0))
+
+                # Pequeña pausa entre dorks para evitar rate limits de Google
+                if self._running and found < self.max_sites:
+                    delay = 5.0  # 5 segundos
+                    self._send("log", f"⏳ Esperando {delay}s antes de la siguiente búsqueda para evitar bloqueos...")
+                    await asyncio.sleep(delay)
 
             self._send("log", f"🎉 Búsqueda asíncrona finalizada. Total encontrados: {found}")
 

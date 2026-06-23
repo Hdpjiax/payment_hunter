@@ -44,10 +44,10 @@ class TestHasCloudflare(unittest.TestCase):
     def test_detects_various_cloudflare_signals(self):
         detector = PaymentDetector([], False, True, [])
         self.assertFalse(detector.has_cloudflare("normal page"))
-        self.assertTrue(detector.has_cloudflare("... CF-RAY: 12345 ..."))
+        self.assertTrue(detector.has_cloudflare("... ray id: 12345 ..."))
         self.assertTrue(detector.has_cloudflare("cf-clearance=xxx"))
-        self.assertTrue(detector.has_cloudflare('<title>Just a moment... | Cloudflare</title>'))
-        self.assertTrue(detector.has_cloudflare("CHALLENGE"))
+        self.assertTrue(detector.has_cloudflare('<title>Just a moment...</title>'))
+        self.assertTrue(detector.has_cloudflare("cf-challenge"))
 
 
 class TestProxyRotation(unittest.TestCase):
@@ -73,13 +73,14 @@ class TestDetectRealPaymentForm(unittest.IsolatedAsyncioTestCase):
         mock_page = AsyncMock()
         mock_page.content.return_value = html_content
         mock_page.goto.return_value = None
+        mock_page.main_frame = mock_page
 
         _payment_inputs = payment_inputs or []
         _action_buttons = action_buttons or []
         _forms = forms or []
 
         async def _query_selector_all(selector):
-            if 'input[name*="card"]' in selector:
+            if any(s in selector for s in ['input[name*="card"]', 'input[id*="card"]', 'input[name="number"]', 'input[name="expiry"]']):
                 return _payment_inputs
             elif 'button' in selector:
                 return _action_buttons
@@ -88,6 +89,7 @@ class TestDetectRealPaymentForm(unittest.IsolatedAsyncioTestCase):
             return []
 
         mock_page.query_selector_all = AsyncMock(side_effect=_query_selector_all)
+        mock_page.frames = [mock_page]
         return mock_page
 
     def _make_mock_context(self, mock_page):
@@ -227,7 +229,7 @@ class TestDetectRealPaymentForm(unittest.IsolatedAsyncioTestCase):
         detector = PaymentDetector([], True, False, ["openpay"])
         self._setup_detector(detector, mock_browser)
 
-        with patch("payment_hunter_pro.detector.stealth_sync") as mock_stealth:
+        with patch("payment_hunter_pro.detector.Stealth.apply_stealth_async", new_callable=AsyncMock) as mock_stealth:
             await detector.detect_real_payment_form("https://test.com")
             mock_stealth.assert_called_once()
 
@@ -249,6 +251,68 @@ class TestDetectRealPaymentForm(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(has_form)
         self.assertGreaterEqual(score, 50)
+
+    async def test_checkout_navigation_skips_sold_out(self):
+        """Verifica que la simulación de compra salta productos agotados y llega a checkout."""
+        mock_page = AsyncMock()
+        mock_page.url = "https://tienda.com"
+        mock_page.content.return_value = "<html><body>shop store product catalog</body></html>"
+        mock_page.main_frame = mock_page
+        mock_page.frames = [mock_page]
+        
+        mock_link1 = AsyncMock()
+        mock_link1.get_attribute.return_value = "/products/out-of-stock"
+        mock_link2 = AsyncMock()
+        mock_link2.get_attribute.return_value = "/products/in-stock"
+        
+        mock_btn_sold_out = AsyncMock()
+        mock_btn_sold_out.is_disabled.return_value = True
+        mock_btn_sold_out.inner_text.return_value = "Sold out"
+        mock_btn_sold_out.get_attribute.return_value = None
+        
+        mock_btn_active = AsyncMock()
+        mock_btn_active.is_disabled.return_value = False
+        mock_btn_active.inner_text.return_value = "Add to cart"
+        mock_btn_active.get_attribute.return_value = None
+        mock_btn_active.click.return_value = None
+        
+        mock_checkout_btn = AsyncMock()
+        mock_checkout_btn.get_attribute.return_value = "/checkout"
+        
+        async def _query_selector_all_side_effect(selector):
+            if 'a[href*="/products/"]' in selector:
+                return [mock_link1, mock_link2]
+            elif 'button[name="add"]' in selector:
+                if "out-of-stock" in mock_page.url:
+                    return [mock_btn_sold_out]
+                else:
+                    return [mock_btn_active]
+            elif 'a[href*="checkout"]' in selector:
+                return [mock_checkout_btn]
+            elif any(s in selector for s in ['input[name*="card"]', 'input[id*="card"]', 'input[name="number"]', 'input[name="expiry"]']):
+                return [AsyncMock()]
+            return []
+            
+        mock_page.query_selector_all.side_effect = _query_selector_all_side_effect
+        
+        async def _goto_side_effect(url, **kwargs):
+            mock_page.url = url
+            if "checkout" in url:
+                mock_page.content.return_value = "<html>stripe.com billing checkout-form</html>"
+            return None
+        mock_page.goto.side_effect = _goto_side_effect
+        
+        mock_context = self._make_mock_context(mock_page)
+        mock_browser = self._make_mock_browser(mock_context)
+        
+        detector = PaymentDetector([], False, False, ["stripe"])
+        self._setup_detector(detector, mock_browser)
+        
+        detected, has_form, score = await detector.detect_real_payment_form("https://tienda.com")
+        
+        self.assertTrue(has_form)
+        self.assertIn("Stripe", detected)
+        self.assertEqual(mock_page.url, "https://tienda.com/checkout")
 
     async def test_close_cleans_up_resources(self):
         """Verifica que close() cierra browser y playwright correctamente."""
